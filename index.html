@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>수업 준비 - AI 체육 선생님</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; display: flex; flex-direction: column; align-items: center; background: #f4f7f6; margin: 0; padding: 20px; }
+        h1 { color: #2c3e50; }
+        
+        /* 메인 컨테이너: 카메라와 점검 항목 */
+        .main-wrapper { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 1200px; }
+
+        /* 카메라 영역 */
+        .camera-container { position: relative; width: 640px; height: 480px; background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #webcam { transform: rotateY(180deg); width: 100%; height: 100%; object-fit: cover; }
+        #output_canvas { position: absolute; left: 0; top: 0; transform: rotateY(180deg); width: 100%; height: 100%; }
+
+        /* 점검 항목 패널 */
+        .check-panel { width: 350px; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .panel-title { font-size: 1.2em; font-weight: bold; margin-bottom: 20px; color: #34495e; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        
+        /* 카메라 선택 셀렉트 박스 */
+        .device-select { width: 100%; padding: 10px; margin-bottom: 20px; border-radius: 6px; border: 1px solid #ddd; font-size: 1em; }
+
+        /* 상태 표시 아이템 */
+        .check-item { display: flex; align-items: center; margin-bottom: 15px; padding: 10px; border-radius: 8px; background: #f8f9fa; }
+        .check-icon { font-size: 1.5em; margin-right: 15px; }
+        .check-text { flex-grow: 1; }
+        .check-status { font-weight: bold; font-size: 0.9em; padding: 3px 8px; border-radius: 4px; }
+
+        /* 상태별 색상 (대기, 성공, 실패) */
+        .status-wait { background: #ffeaa7; color: #d63031; } /* 노랑: 확인 중 */
+        .status-ok { background: #55efc4; color: #00b894; }   /* 초록: 양호 */
+        .status-fail { background: #fab1a0; color: #e17055; } /* 빨강: 오류 */
+
+        /* 시작 버튼 */
+        #start-btn { width: 100%; padding: 15px; border: none; border-radius: 8px; background: #3498db; color: white; font-size: 1.2em; font-weight: bold; cursor: pointer; transition: background 0.3s; margin-top: 20px; }
+        #start-btn:disabled { background: #bdc3c7; cursor: not-allowed; }
+        #start-btn:not(:disabled):hover { background: #2980b9; }
+
+        /* 로딩/에러 메시지 오버레이 */
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); color: white; display: flex; align-items: center; justify-content: center; font-size: 1.2em; visibility: hidden; z-index: 10; }
+    </style>
+</head>
+<body>
+
+    <h1>📋 수업 준비를 시작합니다</h1>
+    <p>AI가 동작을 잘 인식할 수 있도록 카메라와 본인의 모습을 확인해주세요.</p>
+
+    <div class="main-wrapper">
+        <div class="camera-container">
+            <div id="loading-overlay" class="overlay" style="visibility: visible;">AI 모델 로딩 중...</div>
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="output_canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div class="check-panel">
+            <div class="panel-title">점검 항목</div>
+
+            <label for="camera-select" style="font-size: 0.9em; color: #7f8c8d;">카메라 선택</label>
+            <select id="camera-select" class="device-select">
+                <option value="">카메라를 불러오는 중...</option>
+            </select>
+
+            <div class="check-item">
+                <span class="check-icon">📷</span>
+                <span class="check-text">카메라 연결 상태</span>
+                <span id="status-camera" class="check-status status-wait">확인 중</span>
+            </div>
+
+            <div class="check-item">
+                <span class="check-icon">🧍‍♂️</span>
+                <span class="check-text">머리-손-발 전신 인식</span>
+                <span id="status-pose" class="check-status status-wait">대기 중</span>
+            </div>
+
+            <p style="font-size: 0.85em; color: #7f8c8d; line-height: 1.4; margin-top: 5px;">
+                * 가급적 전신이 다 보이도록 서주세요.<br>
+                * 배경이 너무 복잡하면 인식이 잘 안 될 수 있습니다.
+            </p>
+
+            <button id="start-btn" disabled>수업 시작하기</button>
+        </div>
+    </div>
+
+    <script type="module">
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const cameraSelect = document.getElementById('camera-select');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const startBtn = document.getElementById('start-btn');
+
+        // 상태 표시 엘리먼트
+        const statusCamera = document.getElementById('status-camera');
+        const statusPose = document.getElementById('status-pose');
+
+        let currentStream = null;
+        let isPoseLoaded = false;
+        let poseDetector = null;
+
+        // 점검 통과 여부 변수
+        let isCameraOk = false;
+        let isFullBodyVisible = false;
+
+        // ---------------------------------------------------------
+        // 1. 핵심: 전신 인식 체크 로직 (Ready Check)
+        // ---------------------------------------------------------
+        // 확인이 필요한 주요 관절 인덱스 (MediaPipe Pose 기준)
+        // 0: 코, 11/12: 양쪽 어깨, 15/16: 양쪽 손목, 27/28: 양쪽 발목, 31/32: 양쪽 발가락
+        const REQUIRED_LANDMARKS = [0, 11, 12, 15, 16, 27, 28, 31, 32];
+
+        function checkFullBodyVisible(landmarks) {
+            // 모든 필수 관절이 화면(0.0~1.0) 안에 있고, 신뢰도가 0.5 이상이어야 함
+            return REQUIRED_LANDMARKS.every(index => {
+                const lm = landmarks[index];
+                return lm && 
+                       lm.x >= 0 && lm.x <= 1 && 
+                       lm.y >= 0 && lm.y <= 1 && 
+                       lm.visibility > 0.5; // 신뢰도 체크
+            });
+        }
+
+        function onResults(results) {
+            // 로딩 오버레이 숨기기 (첫 번째 결과가 오면 로딩 완료)
+            if (!isPoseLoaded) {
+                isPoseLoaded = true;
+                loadingOverlay.style.visibility = 'hidden';
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                // 전신 인식 여부 확인
+                isFullBodyVisible = checkFullBodyVisible(results.poseLandmarks);
+
+                // 캔버스에 그리기 (가이드라인 색상 변경)
+                const lineColor = isFullBodyVisible ? '#00FF00' : '#FFD700'; // 전신 보이면 초록, 아니면 노랑
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: lineColor, lineWidth: 3});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+
+                // UI 상태 업데이트
+                if (isFullBodyVisible) {
+                    statusPose.innerText = "양호";
+                    statusPose.className = "check-status status-ok";
+                } else {
+                    statusPose.innerText = "전신 안 보임";
+                    statusPose.className = "check-status status-wait";
+                }
+            } else {
+                isFullBodyVisible = false;
+                statusPose.innerText = "사람 없음";
+                statusPose.className = "check-status status-wait";
+            }
+
+            canvasCtx.restore();
+            updateStartButtonState();
+        }
+
+        // ---------------------------------------------------------
+        // 2. 카메라 장치 관리 및 예외 처리
+        // ---------------------------------------------------------
+        
+        // 카메라 장치 목록을 불러와 셀렉트 박스에 채움
+        async function loadCameraDevices() {
+            try {
+                // 먼저 권한을 요청하여 장치 레이블(이름)을 가져올 수 있도록 함
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+                cameraSelect.innerHTML = ''; // 초기화
+
+                if (videoDevices.length === 0) {
+                    const option = document.createElement('option');
+                    option.text = "연결된 카메라 없음";
+                    cameraSelect.add(option);
+                    setCameraStatus(false, "장치 없음");
+                    return;
+                }
+
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `카메라 ${index + 1}`;
+                    cameraSelect.add(option);
+                });
+
+                // 셀렉트 박스 변경 이벤트 리스너 등록
+                cameraSelect.addEventListener('change', (event) => {
+                    startCamera(event.target.value);
+                });
+
+                // 첫 번째 카메라로 시작
+                startCamera(videoDevices[0].deviceId);
+
+            } catch (error) {
+                console.error("장치 목록 로드 실패:", error);
+                cameraSelect.innerHTML = '<option>카메라 접근 거부됨</option>';
+                setCameraStatus(false, "권한 거부");
+            }
+        }
+
+        // 실제 카메라 스트림 시작
+        async function startCamera(deviceId) {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            const constraints = {
+                video: { deviceId: { exact: deviceId }, width: 640, height: 480 }
+            };
+
+            try {
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = currentStream;
+                setCameraStatus(true, "양호");
+                
+                videoElement.onloadeddata = () => {
+                    detectionLoop(); // MediaPipe 분석 시작
+                };
+            } catch (error)
+            {
+                console.error("카메라 시작 실패:", error);
+                setCameraStatus(false, "오류");
+            }
+        }
+
+        function setCameraStatus(isOk, text) {
+            isCameraOk = isOk;
+            statusCamera.innerText = text;
+            statusCamera.className = `check-status status-${isOk ? 'ok' : 'fail'}`;
+            updateStartButtonState();
+        }
+
+        // 수업 시작 버튼 활성화 여부 결정
+        function updateStartButtonState() {
+            startBtn.disabled = !(isCameraOk && isFullBodyVisible);
+        }
+
+        // ---------------------------------------------------------
+        // 3. MediaPipe Pose 초기화 및 메인 루프
+        // ---------------------------------------------------------
+        poseDetector = new Pose({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            }
+        });
+
+        poseDetector.setOptions({
+            modelComplexity: 1, // 수업용으로 적절한 성능/정확도 밸런스
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        poseDetector.onResults(onResults);
+
+        async function detectionLoop() {
+            if (!currentStream) return;
+            await poseDetector.send({image: videoElement});
+            requestAnimationFrame(detectionLoop);
+        }
+
+        // 초기화 실행
+        loadCameraDevices();
+
+        // 버튼 클릭 이벤트
+        startBtn.addEventListener('click', () => {
+            alert("수업 페이지로 이동합니다! (여기에 페이지 이동 로직 추가)");
+            // window.location.href = 'main_exercise.html';
+        });
+
+    </script>
+</body>
+</html>
